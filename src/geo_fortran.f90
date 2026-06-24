@@ -276,11 +276,12 @@ contains
     prjpath = geo_replace_ext(trim(path), 'prj')
     open(newunit=u, file=trim(prjpath), status='UNKNOWN', iostat=ios)
     if (ios /= 0) return
-    write(u,"('GEOGCS[""GCS_WGS_1984"","//&
-              'DATUM[""D_WGS_1984"","//&
-              'SPHEROID[""WGS_1984"",6378137.0,298.257223563]],'//&
-              'PRIMEM[""Greenwich"",0.0],'//&
-              'UNIT[""Degree"",0.0174532925199433]]')")
+    ! OGC WKT for WGS84 Geographic coordinate system
+    write(u,'(A)') 'GEOGCS["GCS_WGS_1984",'// &
+      'DATUM["D_WGS_1984",'// &
+      'SPHEROID["WGS_1984",6378137.0,298.257223563]],'// &
+      'PRIMEM["Greenwich",0.0],'// &
+      'UNIT["Degree",0.0174532925199433]]'
     close(u)
   end subroutine geo_write_prj
 
@@ -332,6 +333,24 @@ contains
 
     end select
   end function geo_detect_format
+
+  ! ---------------------------------------------------------------------------
+  ! Infer format from extension only (no file read).
+  ! Used when saving: the target file may not exist yet.
+  ! For .grd defaults to Surfer ASCII (DSAA); for .txt defaults to FRF.
+  ! ---------------------------------------------------------------------------
+  integer function geo_format_from_ext(path)
+    character(len=*), intent(in) :: path
+    character(len=16) :: ext
+    ext = geo_extension(trim(path))
+    select case (trim(ext))
+    case ('asc');       geo_format_from_ext = GEO_FMT_ESRI_ASC
+    case ('bil');       geo_format_from_ext = GEO_FMT_ESRI_BIL
+    case ('grd');       geo_format_from_ext = GEO_FMT_SURFER_ASC  ! default Surfer format
+    case ('txt','dat'); geo_format_from_ext = GEO_FMT_TXT_FRF
+    case default;       geo_format_from_ext = GEO_FMT_UNKNOWN
+    end select
+  end function geo_format_from_ext
 
   ! ===========================================================================
   ! Section 3: Auto-dispatch load / save
@@ -407,7 +426,9 @@ contains
     if (present(fmt)) then
       effective_fmt = fmt
     else
-      effective_fmt = geo_detect_format(trim(path))
+      ! Use extension-only detection for saving: target file may not exist yet.
+      ! For .grd with an explicit Surfer variant, caller must pass fmt explicitly.
+      effective_fmt = geo_format_from_ext(trim(path))
     end if
 
     select case (effective_fmt)
@@ -447,11 +468,9 @@ contains
     character(len=*), intent(in) :: path
     type(GeoGrid) :: g
 
-    integer :: u, ios, i, j
-    character(len=:), allocatable :: line
+    integer :: u, ios, j
     character(len=64) :: key
     real(real64) :: rval
-    integer(int32) :: ival
     logical :: center_x, center_y
 
     center_x = .false.
@@ -464,20 +483,20 @@ contains
     end if
 
     ! --- Parse header (exactly 6 mandatory key-value lines) ---
-    call geo_asc_read_kv_int(u,  'ncols',        g%ncols,  ios); if (ios/=0) goto 900
-    call geo_asc_read_kv_int(u,  'nrows',        g%nrows,  ios); if (ios/=0) goto 900
-    call geo_asc_read_kv_real(u, 'xllcorner',    g%x0,     key, ios)
+    call geo_asc_read_kv_int(u,  g%ncols,  ios); if (ios/=0) goto 900
+    call geo_asc_read_kv_int(u,  g%nrows,  ios); if (ios/=0) goto 900
+    call geo_asc_read_kv_real(u, g%x0,     key, ios)
     if (ios/=0) goto 900
     if (geo_streq(trim(key), 'xllcenter')) center_x = .true.
-    call geo_asc_read_kv_real(u, 'yllcorner',    g%y0,     key, ios)
+    call geo_asc_read_kv_real(u, g%y0,     key, ios)
     if (ios/=0) goto 900
     if (geo_streq(trim(key), 'yllcenter')) center_y = .true.
 
     ! cellsize — stored in dx (assume square cells)
-    call geo_asc_read_kv_real(u, 'cellsize',     rval,     key, ios); if (ios/=0) goto 900
+    call geo_asc_read_kv_real(u, rval, key, ios); if (ios/=0) goto 900
     g%dx = rval
     g%dy = rval
-    call geo_asc_read_kv_real(u, 'nodata_value', g%nodata, key, ios); if (ios/=0) goto 900
+    call geo_asc_read_kv_real(u, g%nodata, key, ios); if (ios/=0) goto 900
 
     ! Convert center to corner if needed
     if (center_x) g%x0 = g%x0 - g%dx / 2.d0
@@ -541,9 +560,8 @@ contains
 
   ! --- Internal helpers for ESRI ASC header parsing ---
 
-  subroutine geo_asc_read_kv_int(unit, expected_key, val, ios)
+  subroutine geo_asc_read_kv_int(unit, val, ios)
     integer,          intent(in)  :: unit
-    character(len=*), intent(in)  :: expected_key
     integer(int32),   intent(out) :: val
     integer,          intent(out) :: ios
     character(len=:), allocatable :: line
@@ -556,9 +574,8 @@ contains
     end if
   end subroutine geo_asc_read_kv_int
 
-  subroutine geo_asc_read_kv_real(unit, expected_key, val, actual_key, ios)
+  subroutine geo_asc_read_kv_real(unit, val, actual_key, ios)
     integer,          intent(in)  :: unit
-    character(len=*), intent(in)  :: expected_key
     real(real64),     intent(out) :: val
     character(len=*), intent(out) :: actual_key
     integer,          intent(out) :: ios
@@ -1304,7 +1321,7 @@ contains
     integer,       intent(out), optional :: max_col, max_row
     real(real64),  intent(out), optional :: rel_pct
     integer :: i, j, bi, bj
-    real(real64) :: diff, av, bv, ad
+    real(real64) :: diff, av, bv
 
     max_diff = -1.d0
     if (a%ncols /= b%ncols .or. a%nrows /= b%nrows) then

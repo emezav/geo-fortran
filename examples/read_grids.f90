@@ -12,7 +12,7 @@
 ! =============================================================================
 program read_grids
   use GeoFortranMod
-  use, intrinsic :: iso_fortran_env, only: real32, real64
+  use, intrinsic :: iso_fortran_env, only: int32, real32, real64
   implicit none
 
   integer :: nargs, iarg
@@ -91,7 +91,7 @@ contains
 
   subroutine print_grid_info(g)
     type(GeoGrid), intent(in) :: g
-    integer :: ci, cj, w, i, j
+    integer :: ci, cj, w, j
     character(len=20) :: fmt_name
 
     select case (g%fmt)
