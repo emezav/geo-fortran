@@ -14,13 +14,13 @@ the same format coverage and coordinate conventions.
 
 | Format | Extension | Read | Write | Notes |
 |--------|-----------|------|-------|-------|
-| ESRI ASCII | `.asc` | ✅ | ✅ | `xllcorner`/`xllcenter` both accepted |
-| ESRI BIL | `.bil` + `.hdr` | ✅ | ✅ | float32 binary, companion text header |
-| Surfer ASCII | `.grd` (DSAA) | ✅ | ✅ | Golden Software ASCII grid |
-| Surfer 6 Binary | `.grd` (DSBB) | ✅ | ✅ | float32, ncols/nrows as int16 (max 32767) |
-| Surfer 7 Binary | `.grd` (DSRB) | ✅ | ✅ | float64 data; sectioned format |
-| Plain text FRF | `.txt` / `.dat` | ✅ | ✅ | no header; south row first |
-| Plain text LRF | `.txt` / `.dat` | ✅ | ✅ | no header; north row first |
+| ESRI ASCII | `.asc` | YES | YES | `xllcorner`/`xllcenter` both accepted |
+| ESRI BIL | `.bil` + `.hdr` | YES | YES | float32 binary, companion text header |
+| Surfer ASCII | `.grd` (DSAA) | YES | YES | Golden Software ASCII grid |
+| Surfer 6 Binary | `.grd` (DSBB) | YES | YES | float32, ncols/nrows as int16 (max 32767) |
+| Surfer 7 Binary | `.grd` (DSRB) | YES | YES | float64 data; sectioned format |
+| Plain text FRF | `.txt` / `.dat` | YES | YES | no header; south row first |
+| Plain text LRF | `.txt` / `.dat` | YES | YES | no header; north row first |
 
 ---
 
@@ -29,11 +29,11 @@ the same format coverage and coordinate conventions.
 All grids are normalised internally to a common convention:
 
 ```
-x0, y0  — lower-left CORNER of the grid (decimal degrees, WGS84)
-dx, dy  — cell size in X / Y  (decimal degrees)
-data(i, j) — value at column i (1..ncols), row j (1..nrows)
-             i increases west → east
-             j increases south → north  (j=1 = southernmost row)
+x0, y0  -- lower-left CORNER of the grid (decimal degrees, WGS84)
+dx, dy  -- cell size in X / Y  (decimal degrees)
+data(i, j) -- value at column i (1..ncols), row j (1..nrows)
+             i increases west to east
+             j increases south to north  (j=1 = southernmost row)
 ```
 
 Formats that store **node/cell-centre coordinates** (Surfer ASCII, Surfer 6,
@@ -46,8 +46,8 @@ at save time.
 
 ## Building
 
-Requires CMake ≥ 3.18 and a Fortran 2003 compiler
-(`gfortran` ≥ 4.9, `nvfortran`, or Intel `ifort`).
+Requires CMake >= 3.18 and a Fortran 2003 compiler
+(`gfortran` >= 4.9, `nvfortran`, or Intel `ifort`).
 
 ```bash
 mkdir build && cd build
@@ -71,9 +71,9 @@ make create_grids read_grids
 use GeoFortranMod
 type(GeoGrid) :: g
 
-g = geo_load_grid('bathymetry.asc')   ! ESRI ASCII — auto-detected
-g = geo_load_grid('bathymetry.bil')   ! ESRI BIL   — auto-detected
-g = geo_load_grid('bathymetry.grd')   ! Surfer (any version) — magic-bytes detection
+g = geo_load_grid('bathymetry.asc')   ! ESRI ASCII -- auto-detected
+g = geo_load_grid('bathymetry.bil')   ! ESRI BIL   -- auto-detected
+g = geo_load_grid('bathymetry.grd')   ! Surfer (any version) -- magic-bytes detection
 
 if (.not. g%loaded) stop 'failed to load grid'
 write(*,*) g%ncols, 'x', g%nrows, 'cells'
