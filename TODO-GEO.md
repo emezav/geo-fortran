@@ -1,245 +1,135 @@
-# TODO-GEO.md — Bugs and improvements to backport to geo (C++)
+# TODO-GEO.md -- Bugs and improvements to backport
 
-This file documents issues found while implementing `geo-fortran`.
-Each item is a candidate for a fix or improvement in the original
-[emezav/geo](https://github.com/emezav/geo) C++ library.
+This file documents issues found while implementing geo-fortran and reviewing
+the original geo C++ library and the grid.f90 module in tsunamin2cudafortran.
+
+Items are grouped by target: the geo C++ library or grid.f90 (Fortran).
 
 ---
 
-## Bugs
+## Corrections to the initial analysis
 
-### BUG-1 — Surfer ASCII: wrong `dx`/`dy` when `ncols > 1`
+The first version of this file incorrectly attributed three Surfer-related
+bugs to geo.h.  After reading the actual source code the findings are:
 
-**File:** `geo.h`  `Surfer::loadAscii()` (or equivalent)  
-**Also present in:** `tsunamin2cudafortran/grid.f90` → `LoadSurferASCIIGrid`
+- geo.h Surfer ASCII and Surfer 6 loader use (columns-1) in the dx formula
+  and convert center to corner correctly.  No bug in geo.h.
+- geo.h Surfer 7 loader writes "DATA" and compares against "data" (lowercase).
+  No bug in geo.h.
+- The Surfer coordinate bugs exist only in grid.f90 (tsunamin2cudafortran).
 
-**Problem:**  
-The Surfer ASCII format (`DSAA`) stores the X/Y extents as the coordinates of
-the **centre** of the leftmost/rightmost columns and bottom/top rows — not as
-grid corners.  The cell spacing between adjacent nodes is therefore:
+The items below reflect the corrected analysis.
 
-```
-dx = (xmax - xmin) / (ncols - 1)
-```
+---
 
-Both `geo.h` and `grid.f90` compute:
+## Bugs in grid.f90 (tsunamin2cudafortran)
 
-```
-dx = (xmax - xmin) / ncols          ← WRONG
-```
+### BUG-F1 -- Surfer ASCII: wrong dx/dy formula
 
-This underestimates the cell size by a factor of `(ncols-1)/ncols` and shifts
-`xmax` inward by one cell width, causing a systematic alignment error.
+**File:** `tsunamin2cudafortran/grid.f90` -> `LoadSurferASCIIGrid`
 
-**Fix for geo.h:**
-```cpp
-double dx = (ncols > 1) ? (xmax - xmin) / (ncols - 1) : (xmax - xmin);
-double x0 = xmin - dx / 2.0;        // corner convention
-```
+The Surfer ASCII header stores xmin/xmax as the X coordinates of the
+centres of the leftmost and rightmost columns.  The node spacing is:
 
-**Fix for grid.f90:**
+    dx = (xmax - xmin) / (ncols - 1)
+
+The current code computes:
+
+    this%dx = (this%xhi - this%xlo) / this%if   ! WRONG: divides by ncols
+
+This underestimates dx by a factor of (ncols-1)/ncols and produces a small
+but systematic alignment error that grows with grid size.
+
+**Fix:**
 ```fortran
 if (this%if > 1) then
-  this%dx = (this%xhi - this%xlo) / real(this%if - 1)
+    this%dx = (this%xhi - this%xlo) / real(this%if - 1)
 else
-  this%dx = this%xhi - this%xlo
+    this%dx = this%xhi - this%xlo
 end if
-this%xlo = this%xlo - this%dx / 2.0  ! convert centre → corner
+```
+
+---
+
+### BUG-F2 -- Surfer ASCII: stored coordinates are centres, not corners
+
+**File:** `tsunamin2cudafortran/grid.f90` -> `LoadSurferASCIIGrid`
+
+After applying the corrected formula from BUG-F1, xlo/ylo still hold the
+centre coordinates read from the file, not the lower-left corner of the grid.
+The ESRI ASCII loader stores corners in xlo/ylo.  This inconsistency causes
+wrong results in GridNesting and any code that mixes grids from both loaders.
+
+**Fix (after BUG-F1):**
+```fortran
+this%xlo = this%xlo - this%dx / 2.0
 this%ylo = this%ylo - this%dy / 2.0
 ```
 
----
-
-### BUG-2 — Surfer ASCII in `grid.f90`: inconsistent coordinate convention
-
-**File:** `tsunamin2cudafortran/grid.f90` → `LoadSurferASCIIGrid`
-
-**Problem:**  
-`LoadEsriASCIIGrid` stores `xlo` / `ylo` as **corner** coordinates
-(as specified by the ESRI ASC format).  `LoadSurferASCIIGrid` stores the raw
-values from the DSAA header, which are **centre** coordinates of the edge
-cells.  The `Grid` type does not document which convention is in use, so
-downstream code that mixes grids from both loaders computes wrong positions
-and nesting indices.
-
-**Fix:** Normalise all loaders to store corner coordinates in `xlo`/`ylo`.
-Apply the centre-to-corner correction in `LoadSurferASCIIGrid` (see BUG-1).
-
----
-
-### BUG-3 — Surfer 6 Binary: coordinate convention identical to BUG-1/BUG-2
-
-**File:** `geo.h`  `Surfer::load6()` (or equivalent)
-
-**Problem:** Same centre-vs-corner issue as BUG-1 applies to the binary header
-of Surfer 6 (`DSBB`).  The `xmin`/`xmax`/`ymin`/`ymax` fields are centres of
-the edge nodes; `dx = (xmax - xmin) / (ncols - 1)`.
-
----
-
-### BUG-4 — Surfer 7 Binary: ambiguous section tag "ATAD" vs "DATA"
-
-**File:** `geo.h`  Surfer 7 loader  
-
-**Problem:**  
-`geo.h` appears to compare the data-section tag against `"ATAD"` rather than
-`"DATA"`.  If this comparison is performed by reading 4 bytes into a
-`char[4]` and comparing as a string, the literal bytes in the file must spell
-`A-T-A-D` — which is not the standard Surfer 7 specification (which uses
-`DATA`).
-
-Likely cause: the tag was read into a `uint32_t` variable and compared as a
-little-endian integer.  On a little-endian host, the bytes `D-A-T-A`
-(0x44, 0x41, 0x54, 0x41) are read as the 32-bit integer `0x41544144`.
-Converting that integer back to a string via `reinterpret_cast<char*>` yields
-the bytes in memory order on that platform, which on a little-endian host is
-still `D-A-T-A`.  The comparison with the string literal `"ATAD"` (bytes
-`0x41, 0x54, 0x41, 0x44`) would therefore **fail** on standard little-endian
-hardware.
-
-`geo-fortran` reads the 4-byte tag as `character(len=4)` directly from the
-stream, getting `"DATA"` in file order.  This is correct and avoids the
-endian confusion.
-
-**Recommended fix for geo.h:** compare the tag as a `char[4]` string, not as
-an integer:
-```cpp
-char tag[4];
-fread(tag, 4, 1, f);
-if (memcmp(tag, "DATA", 4) == 0) { /* data section */ }
+And update the Surfer ASCII save to reconstruct centres before writing:
+```fortran
+xmin_centre = this%xlo + this%dx / 2.0
+xmax_centre = xmin_centre + (this%if - 1) * this%dx
 ```
 
 ---
 
-### BUG-5 — `grid.f90` `NODATA_value` case sensitivity
+### BUG-F3 -- NODATA_value case sensitivity in ESRI ASCII loader
 
-**File:** `tsunamin2cudafortran/grid.f90` → `LoadEsriASCIIGrid`
+**File:** `tsunamin2cudafortran/grid.f90` -> `LoadEsriASCIIGrid`
 
-**Problem:**  
-The NODATA keyword check is:
+The keyword check is:
 ```fortran
 if (param /= 'nodata_value' .and. param /= 'NODATA_value')
 ```
-This rejects valid mixed-case variants such as `NODATA_VALUE` or
-`Nodata_Value` that some tools write.
 
-**Fix:** Use a case-insensitive comparison (as `geo-fortran` does with
-`geo_streq`).
+This rejects valid variants such as `NODATA_VALUE` (all caps) that some tools
+write.  A case-insensitive comparison is needed.
 
 ---
 
-## Improvements / Design
+## Improvements for geo.h (C++)
 
-### IMPROVE-1 — Use double precision for geographic coordinates
+The following are quality improvements, not correctness bugs.  geo.h produces
+correct results for the formats tested.
 
-**Affects:** `tsunamin2cudafortran/grid.f90`
+### IMPROVE-1 -- Single-precision data array limits Surfer 7 accuracy
 
-`xlo`, `ylo`, `dx`, `dy` etc. are `real` (32-bit) in the existing `GridModule`.
-At fine resolutions (3 arc-second = 0.000833°) a 32-bit float retains only
-~4–5 significant digits in the fractional part, introducing sub-cell
-positioning errors.
-
-`geo-fortran` uses `real(real64)` for all coordinates.
-
-**Recommended change for grid.f90:** declare coordinate members as
-`real(kind=8)` or `double precision`.
+geo.h stores data internally as `float*` (32-bit).  Surfer 7 files contain
+64-bit double data which is silently downcast at load time.  For tsunami
+bathymetry (O(1)-O(10000) m) the precision loss is acceptable, but it should
+be documented in the API.  geo-fortran makes the same tradeoff (real32 data)
+and documents it explicitly.
 
 ---
 
-### IMPROVE-2 — Eliminate shell-command dependency in `ScanFile`
+### IMPROVE-2 -- PRJ sidecar file uses legacy projection format
 
-**File:** `tsunamin2cudafortran/grid.f90` → `ScanFile`
-
-`ScanFile` shells out to `wc -l` and `awk` to count lines and columns.
-This is non-portable (fails on Windows, some HPC clusters) and adds process
-fork/exec overhead for every grid load.
-
-`geo-fortran` counts lines and columns with pure Fortran I/O.
-
-**Alternative approach:**  
-```fortran
-integer :: nlines, ios
-character(len=1) :: dummy
-nlines = 0
-rewind(u)
-do
-  read(u, '(A)', iostat=ios)
-  if (ios /= 0) exit
-  nlines = nlines + 1
-end do
-```
-
----
-
-### IMPROVE-3 — `newunit=` instead of hard-coded unit numbers
-
-**File:** `tsunamin2cudafortran/grid.f90`
-
-Unit 99 is hard-coded throughout.  If two modules happen to open unit 99
-simultaneously the behaviour is undefined.  The Fortran 2008 `newunit=`
-specifier allocates a fresh, unique unit automatically.
-
-**Fix:** Replace `open(unit=99, ...)` with `open(newunit=u, ...)`.
-
----
-
-### IMPROVE-4 — geo.h: single-precision data array limits Surfer 7 precision
-
-**File:** `geo.h`
-
-`geo.h` stores the internal data as `float*` (32-bit), but Surfer 7 files
-contain 64-bit double data.  Loading a Surfer 7 file silently downcasts the
-values.  For tsunami bathymetry this is generally acceptable (depths are
-O(1)–O(10000) m, well within float range), but it should be documented.
-
-`geo-fortran` makes the same tradeoff (`data(:,:)` is `real(4)`) and
-documents it explicitly.
-
----
-
-### IMPROVE-5 — PRJ sidecar file content
-
-**File:** `geo.h` (ESRI savers) and `tsunamin2cudafortran/grid.f90`
-
-The existing `.prj` writers produce a legacy plain-text projection format:
+The current .prj writer produces:
 ```
 Projection    GEOGRAPHIC
 Datum         WGS84
 ...
 ```
 
-Modern GIS tools (QGIS ≥ 3.x, ArcGIS) expect OGC WKT format:
+Modern GIS tools (QGIS >= 3.x, ArcGIS) expect OGC WKT:
 ```
-GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",
-  SPHEROID["WGS_1984",6378137.0,298.257223563]],
-  PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]
+GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",...]]
 ```
 
-`geo-fortran` writes OGC WKT.  `geo.h` and `grid.f90` should be updated to
-match.
+geo-fortran writes OGC WKT.  geo.h should be updated to match.
 
 ---
 
-### IMPROVE-6 — Auto-detect `xllcenter`/`xllcorner` case-insensitively in geo.h
+### IMPROVE-3 -- Surfer 7 loader aborts on unknown sections
 
-**File:** `geo.h`  ESRI ASCII loader
+The Surfer 7 format allows optional sections between GRID and DATA.  The
+current loader reads exactly 80 bytes for the grid section and then expects
+DATA immediately.  A file with an extra section would fail to load.
 
-If geo.h does a case-sensitive comparison of the `xllcorner`/`xllcenter`
-keyword, files from tools that write `XLLCORNER` (upper-case) will fail to
-load.  `geo-fortran` lower-cases the key before comparison.
-
----
-
-### IMPROVE-7 — Surfer 7: skip unknown sections instead of aborting
-
-**File:** `geo.h`  Surfer 7 loader
-
-The Surfer 7 format can contain optional sections (statistics, faults, etc.)
-between the mandatory `GRID` and `DATA` sections.  A robust loader should skip
-unknown sections by reading and discarding their `size` bytes.
-
-`geo-fortran` implements this via a `default` case in the section-tag `select`.
+geo-fortran handles this by reading section tags in a loop and skipping
+unknown sections using the size field.
 
 ---
 
-*Last updated during geo-fortran v1.0 initial implementation — 2026-06-24*
+*Last updated: 2026-06-24 -- corrected initial Surfer bug analysis*
