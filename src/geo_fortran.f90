@@ -328,8 +328,29 @@ contains
       end select
 
     case ('txt', 'dat')
-      ! Cannot distinguish FRF / LRF from the file alone — caller decides.
-      geo_detect_format = GEO_FMT_TXT_FRF
+      ! Peek at first token: if it is "ncols" the file is ESRI ASCII with a
+      ! .txt extension (TUNAMI convention).  Otherwise assume plain-text FRF.
+      block
+        integer :: u2, ios2
+        character(len=16) :: tok
+        open(newunit=u2, file=trim(path), status='old', action='read', iostat=ios2)
+        if (ios2 == 0) then
+          read(u2, *, iostat=ios2) tok
+          close(u2)
+          if (ios2 == 0) then
+            call geo_to_lower(tok)
+            if (trim(tok) == 'ncols') then
+              geo_detect_format = GEO_FMT_ESRI_ASC
+            else
+              geo_detect_format = GEO_FMT_TXT_FRF
+            end if
+          else
+            geo_detect_format = GEO_FMT_TXT_FRF
+          end if
+        else
+          geo_detect_format = GEO_FMT_TXT_FRF
+        end if
+      end block
 
     end select
   end function geo_detect_format
